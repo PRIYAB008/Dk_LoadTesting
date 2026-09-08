@@ -1,0 +1,14 @@
+# IDE
+.idea/
+.vscode/
+
+# Node
+node_modules/
+
+# k6 run artifacts - regenerate with `k6 run` + `node scripts/report.js`
+results/
+reports/
+
+# Local scratch
+_*.js
+*.log

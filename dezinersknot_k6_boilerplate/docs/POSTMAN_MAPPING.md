@@ -1,0 +1,26 @@
+# Postman -> k6 Mapping
+
+Known collection endpoints include:
+POST /account_block/accounts
+POST /account_block/accounts/verify_otp
+POST /bx_block_login/login
+PUT /bx_block_profile/profiles/{id}
+GET /bx_block_profile/profiles/{id}
+POST /bx_block_landingpage2/work_opportunities
+GET /bx_block_landingpage2/work_opportunities/find_work_opportunities
+GET /bx_block_landingpage2/work_opportunities/my_work_post_opportunities
+GET /bx_block_joblisting/proposals/work_opportunities_with_contracts
+GET /bx_block_cfproposalmanagement/contract_offers/pending_list_proposal
+POST /bx_block_joblisting/proposals
+POST /bx_block_dashboard/contracts
+PUT /bx_block_cfdesignersidecontractmanagement/designers_contracts/request_edit_milestone
+PUT /bx_block_dashboard/contracts/activate_contract
+PUT /bx_block_cfdesignersidecontractmanagement/client_contracts/activate_milestone/
+POST /bx_block_cfdesignersidecontractmanagement/designer_work_submissions/submit_work
+POST /bx_block_cfdesignersidecontractmanagement/client_contracts/add_milestone
+PUT /bx_block_cfdesignersidecontractmanagement/client_contracts/edit_milestone
+POST /bx_block_cfdesignersidecontractmanagement/client_contracts/payment_from_cashfree
+POST /bx_block_cfdesignersidecontractmanagement/client_contracts/verify_cashfree_payment
+Admin payment endpoints under /bx_block_payment_admin
+
+Some collection requests may contain inconsistent/malformed paths or hard-coded values. Confirm each exact request before implementing it; this boilerplate does not silently correct them.
