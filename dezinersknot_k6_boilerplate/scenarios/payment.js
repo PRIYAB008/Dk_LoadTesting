@@ -2,6 +2,7 @@
 import { clientLogin, makePayment } from '../flows/clientFlow.js';
 import { testData } from '../data/testData.js';
 import { summaryReport } from '../utils/summary.js';
+import { safeIdentifier } from '../utils/helpers.js';
 
 export const options = { vus: 1, iterations: 1 };
 
@@ -16,7 +17,9 @@ export default function () {
   }
 
   const { orderId, alreadyPaid } = makePayment(token, contractId, milestoneId);
-  console.log(`Payment | orderId = ${orderId} | alreadyPaid = ${alreadyPaid}`);
+  console.log(
+    `Payment | order_id=${safeIdentifier(orderId)} already_paid=${alreadyPaid}`
+  );
 }
 
 export function handleSummary(data) {

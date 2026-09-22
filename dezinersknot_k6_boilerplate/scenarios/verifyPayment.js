@@ -11,7 +11,7 @@ export default function () {
 
   const orderId = __ENV.ORDER_ID;
   if (!orderId) {
-    throw new Error('Pass the Cashfree order id: -e ORDER_ID=<id> (printed by scenarios/payment.js)');
+    throw new Error('Pass the Cashfree order id from a secure test-data source: -e ORDER_ID=<id>');
   }
 
   verifyPayment(token, orderId);

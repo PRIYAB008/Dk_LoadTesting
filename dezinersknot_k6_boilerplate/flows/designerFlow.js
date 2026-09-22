@@ -1,4 +1,5 @@
 import http from 'k6/http';
+import encoding from 'k6/encoding';
 import { BASE_URL } from '../config/config.js';
 import { payloads } from '../data/payloads.js';
 import { track } from '../utils/metrics.js';
@@ -7,10 +8,10 @@ import { jsonHeaders, extractToken, extractId } from '../utils/helpers.js';
 export function designerLogin(email, password) {
   const url = `${BASE_URL}/bx_block_login/login`;
   const payload = JSON.stringify({
-    data: { type: 'email_account', attributes: { email, password } }
+    data: { type: 'email_account', attributes: { email, password: encoding.b64encode(password) } }
   });
   const response = http.post(url, payload, jsonHeaders());
-  track('designer_login', 'Designer Login', response);
+  track('designer_login', 'Designer Login', response, { allowBody: false });
   return { response, token: extractToken(response) };
 }
 

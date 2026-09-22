@@ -2,19 +2,36 @@
 import { sleep } from 'k6';
 import { Trend, Rate } from 'k6/metrics';
 import { clientLogin, createOpportunity, clientOfferContract,
-         activateContract, addMilestone, activateMilestone,
+         activateContract, getContractMilestones, activateMilestone,
          makePayment, verifyPayment } from '../flows/clientFlow.js';
 import { designerLogin, findOpportunities, sendProposal,
-         acceptContract } from '../flows/designerFlow.js';
+         acceptContract, submitWork } from '../flows/designerFlow.js';
 import { actorPairs, ACTOR_PASSWORD } from '../data/actors.js';
 import { summaryReport } from '../utils/summary.js';
+import { isWriteOk, safeIdentifier } from '../utils/helpers.js';
+import {
+  assertCashfreeSandboxSettlementConfigured,
+  settleCashfreeSandboxPayment,
+} from '../flows/cashfreeSandbox.js';
+import { paymentConfig, isSandboxPaymentMode } from '../config/payment.js';
 
-const VUS = Number(__ENV.VUS || 60);
+const TEST_TYPE = __ENV.TEST_TYPE || 'load';
+const VUS = positiveInteger('VUS', 60);
 const DURATION = __ENV.DURATION || '30m';
-const LIFECYCLE_SECONDS = Number(__ENV.LIFECYCLE_SECONDS || 300);
-const ALLOW_PAYMENT = __ENV.ALLOW_PAYMENT === 'true';
-const PAYMENT_MODE = __ENV.PAYMENT_MODE || 'order-only';
-const PAYMENT_TAIL = ALLOW_PAYMENT && PAYMENT_MODE === 'full';
+const LIFECYCLE_SECONDS = positiveInteger('LIFECYCLE_SECONDS', 300);
+const ALLOW_PAYMENT = paymentConfig.enabled;
+const PAYMENT_TAIL = ALLOW_PAYMENT && isSandboxPaymentMode();
+const ORDER_ONLY_PAYMENT_LOAD_APPROVED = __ENV.ORDER_ONLY_PAYMENT_LOAD_APPROVED === 'true';
+const SPIKE_VUS = positiveInteger('SPIKE_VUS', VUS);
+const BASELINE_VUS = positiveInteger('BASELINE_VUS', Math.max(1, Math.ceil(VUS * 0.25)));
+const SPIKE_DURATION = __ENV.SPIKE_DURATION || '1m';
+const STAGE_HOLD_DURATION = __ENV.STAGE_HOLD_DURATION || '5m';
+const STAGE_TRANSITION_DURATION = __ENV.STAGE_TRANSITION_DURATION || '1s';
+const STAGED_VUS = [25, 50, 100, 150, 200, 250, 300];
+const START_STAGGER_SECONDS = nonNegativeNumber(
+  'START_STAGGER_SECONDS',
+  TEST_TYPE === 'spike' ? 0 : Math.min(60, LIFECYCLE_SECONDS)
+);
 const LATENCY_RESERVE = Math.min(30, LIFECYCLE_SECONDS * 0.5);
 const THINK_BUDGET = LIFECYCLE_SECONDS - LATENCY_RESERVE;
 const JITTER = 0.1;
@@ -34,6 +51,108 @@ const lifecycleDuration = new Trend('lifecycle_duration', true);
 const lifecycleOnBudget = new Rate('lifecycle_on_budget');
 const lifecycleCompleted = new Rate('lifecycle_completed');
 
+function positiveInteger(name, fallback) {
+  const value = Number(__ENV[name] || fallback);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive whole number; received ${__ENV[name]}`);
+  }
+  return value;
+}
+
+function nonNegativeNumber(name, fallback) {
+  const value = Number(__ENV[name] === undefined ? fallback : __ENV[name]);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be zero or greater; received ${__ENV[name]}`);
+  }
+  return value;
+}
+
+function target(percent) {
+  return Math.max(1, Math.ceil(VUS * percent));
+}
+
+function selectedActorPairs() {
+  const raw = __ENV.PAYMENT_ACTOR_PAIR_INDEXES;
+  if (raw === undefined || raw.trim() === '') return actorPairs;
+
+  const indexes = raw.split(',').map((value) => Number(value.trim()));
+  if (
+    indexes.length === 0 ||
+    indexes.some((index) => !Number.isInteger(index) || index < 0 || index >= actorPairs.length)
+  ) {
+    throw new Error(
+      `PAYMENT_ACTOR_PAIR_INDEXES must contain zero-based actor-pair indexes from ` +
+      `0 to ${actorPairs.length - 1}; received ${raw}`
+    );
+  }
+  return [...new Set(indexes)].map((index) => actorPairs[index]);
+}
+
+function stagesFor(testType) {
+  switch (testType) {
+    case 'load':
+      return [
+        { duration: '2m', target: target(0.25) },
+        { duration: '3m', target: target(0.5) },
+        { duration: '5m', target: VUS },
+        { duration: DURATION, target: VUS },
+        { duration: '5m', target: 0 },
+      ];
+
+    case 'concurrency':
+      return [
+        { duration: '2m', target: VUS },
+        { duration: DURATION, target: VUS },
+        { duration: '2m', target: 0 },
+      ];
+
+    case 'stress':
+      return [
+        { duration: '3m', target: target(0.25) },
+        { duration: '5m', target: target(0.5) },
+        { duration: '5m', target: target(0.75) },
+        { duration: '5m', target: VUS },
+        { duration: DURATION, target: VUS },
+        { duration: '5m', target: 0 },
+      ];
+
+    case 'spike':
+      if (SPIKE_VUS < BASELINE_VUS) {
+        throw new Error(
+          `SPIKE_VUS (${SPIKE_VUS}) must be at least BASELINE_VUS (${BASELINE_VUS}).`
+        );
+      }
+      return [
+        { duration: '2m', target: BASELINE_VUS },
+        { duration: DURATION, target: BASELINE_VUS },
+        { duration: '10s', target: SPIKE_VUS },
+        { duration: SPIKE_DURATION, target: SPIKE_VUS },
+        { duration: '1m', target: BASELINE_VUS },
+        { duration: '2m', target: 0 },
+      ];
+
+    case 'staged': {
+      const stages = [{ duration: STAGE_HOLD_DURATION, target: STAGED_VUS[0] }];
+      for (let index = 1; index < STAGED_VUS.length; index++) {
+        stages.push({ duration: STAGE_TRANSITION_DURATION, target: STAGED_VUS[index] });
+        stages.push({ duration: STAGE_HOLD_DURATION, target: STAGED_VUS[index] });
+      }
+      stages.push({ duration: '2m', target: 0 });
+      return stages;
+    }
+
+    default:
+      throw new Error(
+        `Unknown TEST_TYPE=${testType}. Use load, concurrency, stress, spike, or staged.`
+      );
+  }
+}
+
+const STAGES = stagesFor(TEST_TYPE);
+const MAX_VUS = Math.max(...STAGES.map((stage) => stage.target));
+const INITIAL_VUS = TEST_TYPE === 'staged' ? STAGED_VUS[0] : 0;
+const CONFIGURED_ACTOR_PAIRS = selectedActorPairs();
+
 const thresholds = {
   client_login_success: ['rate>0.99'],
   create_opportunity_success: ['rate>0.99'],
@@ -43,7 +162,7 @@ const thresholds = {
   offer_contract_success: ['rate>0.99'],
   accept_contract_success: ['rate>0.99'],
   activate_contract_success: ['rate>0.99'],
-  add_milestone_success: ['rate>0.99'],
+  contract_milestones_success: ['rate>0.99'],
 
   lifecycle_on_budget: ['rate>0.99'],
   lifecycle_completed: ['rate>0.99'],
@@ -58,16 +177,19 @@ if (ALLOW_PAYMENT) {
   thresholds.payment_success = ['rate>0.99'];
 }
 if (PAYMENT_TAIL) {
+  thresholds.cashfree_sandbox_payment_success = ['rate>0.99'];
   thresholds.payment_verify_success = ['rate>0.99'];
   thresholds.activate_milestone_success = ['rate>0.99'];
+  thresholds.submit_work_success = ['rate>0.99'];
 }
 
 export const options = {
   scenarios: {
     steady: {
-      executor: 'constant-vus',
-      vus: VUS,
-      duration: DURATION,
+      executor: 'ramping-vus',
+      startVUs: INITIAL_VUS,
+      stages: STAGES,
+      gracefulRampDown: `${LIFECYCLE_SECONDS + 30}s`,
       gracefulStop: `${LIFECYCLE_SECONDS + 30}s`,
     },
   },
@@ -81,7 +203,9 @@ function think(step) {
 }
 
 function stagger() {
-  if (VUS > 1 && __ITER === 0) sleep(Math.random() * LIFECYCLE_SECONDS);
+  if (MAX_VUS > 1 && __ITER === 0 && START_STAGGER_SECONDS > 0) {
+    sleep(Math.random() * START_STAGGER_SECONDS);
+  }
 }
 
 function endIteration(startedAt, completed) {
@@ -96,25 +220,40 @@ function endIteration(startedAt, completed) {
 
 export function setup() {
 
-  if (ALLOW_PAYMENT && VUS > 1) {
-    const perHour = ((VUS / LIFECYCLE_SECONDS) * 3600).toFixed(0);
+  if (
+    ALLOW_PAYMENT &&
+    MAX_VUS > 1 &&
+    !(
+      (PAYMENT_TAIL &&
+        __ENV.CASHFREE_SETTLEMENT === 's2s-card' &&
+        paymentConfig.cashfreeEnv === 'sandbox') ||
+      (!PAYMENT_TAIL && ORDER_ONLY_PAYMENT_LOAD_APPROVED)
+    )
+  ) {
+    const perHour = ((MAX_VUS / LIFECYCLE_SECONDS) * 3600).toFixed(0);
     throw new Error(
-      `ALLOW_PAYMENT=true with VUS=${VUS} would create real Cashfree orders ` +
-      `at ~${perHour}/hour for ${DURATION}. Payment needs a human per order: ` +
-      're-run the tail with -e VUS=1, or drop ALLOW_PAYMENT for the load run.'
+      `ALLOW_PAYMENT=true with a ${MAX_VUS}-VU peak would create real Cashfree ` +
+      `orders at up to ~${perHour}/hour. Payment needs a human per order: ` +
+      're-run with -e VUS=1, drop ALLOW_PAYMENT, use the explicitly configured ' +
+      'Cashfree sandbox S2S settlement path, or explicitly acknowledge the ' +
+      'paced order-only load with -e ORDER_ONLY_PAYMENT_LOAD_APPROVED=true.'
     );
   }
 
-  if (actorPairs.length * 2 > 14) {
+  if (PAYMENT_TAIL) {
+    assertCashfreeSandboxSettlementConfigured();
+  }
+
+  if (CONFIGURED_ACTOR_PAIRS.length * 2 > 14) {
     throw new Error(
-      `${actorPairs.length} pairs = ${actorPairs.length * 2} logins, which ` +
+      `${CONFIGURED_ACTOR_PAIRS.length} pairs = ${CONFIGURED_ACTOR_PAIRS.length * 2} logins, which ` +
       'exceeds the 15/60s login rate limit. Trim data/actors.js.'
     );
   }
 
   const actors = [];
 
-  for (const pair of actorPairs) {
+  for (const pair of CONFIGURED_ACTOR_PAIRS) {
     const { token: clientToken } = clientLogin(pair.client, ACTOR_PASSWORD);
     const { token: designerToken } = designerLogin(pair.designer, ACTOR_PASSWORD);
 
@@ -127,22 +266,23 @@ export function setup() {
     actors.push({ clientToken, designerToken });
   }
 
-  const perHour = (VUS / LIFECYCLE_SECONDS) * 3600;
+  const perHour = (MAX_VUS / LIFECYCLE_SECONDS) * 3600;
   console.log(
-    `steady | ${VUS} VUs, ${LIFECYCLE_SECONDS}s lifecycle, ${DURATION} ` +
-    `=> ~${perHour.toFixed(0)} journeys/hour at steady state`
+    `steady | ${TEST_TYPE} profile, ${MAX_VUS}-VU peak, ` +
+    `${LIFECYCLE_SECONDS}s lifecycle => up to ~${perHour.toFixed(0)} journeys/hour`
   );
+  console.log(`steady | stages: ${STAGES.map((stage) => `${stage.duration}->${stage.target} VUs`).join(', ')}`);
   console.log(
     `steady | think budget ${THINK_BUDGET.toFixed(0)}s + ` +
     `${LATENCY_RESERVE.toFixed(0)}s reserved for latency across 7 requests`
   );
   console.log(
-    `steady | first ${LIFECYCLE_SECONDS}s is stagger ramp-in - discard it; ` +
-    `wall clock runs up to ${LIFECYCLE_SECONDS + 30}s past ${DURATION}`
+    `steady | new VUs stagger over ${START_STAGGER_SECONDS}s; ` +
+    `each ramp-down can wait up to ${LIFECYCLE_SECONDS + 30}s for a journey to finish`
   );
   console.log(
     `steady | ${actors.length} actor pairs ready (${actors.length * 2} logins), ` +
-    `${(VUS / actors.length).toFixed(1)} VUs per account`
+    `${(MAX_VUS / actors.length).toFixed(1)} peak VUs per account`
   );
 
   return { actors };
@@ -158,7 +298,8 @@ export default function (data) {
   if (!opportunityId) { endIteration(startedAt, false); return; }
   think('posted');
 
-  findOpportunities(actor.designerToken);
+  const opportunities = findOpportunities(actor.designerToken);
+  if (!isWriteOk(opportunities.response)) { endIteration(startedAt, false); return; }
   think('browsed');
 
   const { proposalId } = sendProposal(actor.designerToken, opportunityId);
@@ -169,33 +310,54 @@ export default function (data) {
   if (!contractId) { endIteration(startedAt, false); return; }
   think('offered');
 
-  acceptContract(actor.designerToken, contractId, opportunityId);
+  const acceptance = acceptContract(actor.designerToken, contractId, opportunityId);
+  if (!isWriteOk(acceptance.response)) { endIteration(startedAt, false); return; }
   think('accepted');
 
-  activateContract(actor.clientToken, contractId);
+  const activation = activateContract(actor.clientToken, contractId);
+  if (!isWriteOk(activation.response)) { endIteration(startedAt, false); return; }
   think('activated');
 
-  const { milestoneId } = addMilestone(actor.clientToken, contractId);
+  const { milestoneId } = getContractMilestones(actor.clientToken, contractId);
   think('scoped');
   if (!ALLOW_PAYMENT || !milestoneId) {
     endIteration(startedAt, true);
     return;
   }
 
-  const { orderId, alreadyPaid } = makePayment(actor.clientToken, contractId, milestoneId);
-
-  console.log(
-    `steady | orderId=${orderId} contractId=${contractId} ` +
-    `milestoneId=${milestoneId} alreadyPaid=${alreadyPaid}`
+  const { orderId, paymentSessionId, alreadyPaid } = makePayment(
+    actor.clientToken,
+    contractId,
+    milestoneId
   );
 
-  if (!PAYMENT_TAIL || !orderId) {
+  console.log(
+    `steady | payment order_id=${safeIdentifier(orderId)} ` +
+    `already_paid=${alreadyPaid}`
+  );
+
+  if (!PAYMENT_TAIL) {
     endIteration(startedAt, true);
     return;
   }
 
-  verifyPayment(actor.clientToken, orderId);
-  activateMilestone(actor.clientToken, contractId, milestoneId);
+  if (!orderId || !paymentSessionId) {
+    console.log('steady | payment order did not return both order_id and payment_session_id');
+    endIteration(startedAt, false);
+    return;
+  }
+
+  const settlement = settleCashfreeSandboxPayment(paymentSessionId, orderId);
+  if (!settlement.ok) { endIteration(startedAt, false); return; }
+
+  const verification = verifyPayment(actor.clientToken, orderId);
+  if (!isWriteOk(verification.response)) { endIteration(startedAt, false); return; }
+
+  const milestoneActivation = activateMilestone(actor.clientToken, contractId, milestoneId);
+  if (!isWriteOk(milestoneActivation.response)) { endIteration(startedAt, false); return; }
+
+  const workSubmission = submitWork(actor.designerToken, contractId, milestoneId);
+  if (!isWriteOk(workSubmission.response)) { endIteration(startedAt, false); return; }
 
   endIteration(startedAt, true);
 }

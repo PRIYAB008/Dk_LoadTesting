@@ -57,12 +57,9 @@ export function failureReason(response) {
   return `HTTP ${response.status}${detail ? ' - ' + detail.slice(0, 160) : ''}`;
 }
 
-// Per-request body logging is fine for the vus:1 debug scenarios but costs
-// real throughput at 60 VUs, where it prints thousands of full bodies. QUIET
-// keeps failures visible and drops the rest. Default is unchanged.
 const QUIET = __ENV.QUIET === 'true';
 
-export function logResponse(name, response) {
+export function logResponse(name, response, allowBody = true) {
   const ok = isWriteOk(response);
 
   if (QUIET) {
@@ -72,7 +69,21 @@ export function logResponse(name, response) {
 
   console.log(`${name} | status=${response.status} ok=${ok}`);
   if (!ok) console.log(`${name} | ${failureReason(response)}`);
-  console.log(`${name} | body=${response.body}`);
+  if (allowBody) console.log(`${name} | body=${response.body}`);
+}
+
+export function safeIdentifier(value) {
+  return value ? `…${String(value).slice(-6)}` : 'missing';
+}
+
+export function logPaymentResponse(name, response, ok, orderId = null, detail = '') {
+  const id = safeIdentifier(orderId);
+  const suffix = detail ? ` ${detail}` : '';
+
+  if (QUIET && ok) return;
+  console.log(
+    `${name} | status=${response.status} ok=${ok} order_id=${id}${suffix}`
+  );
 }
 
 export function extractToken(response) {

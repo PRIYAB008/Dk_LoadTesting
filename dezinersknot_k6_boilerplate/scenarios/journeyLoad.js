@@ -1,7 +1,7 @@
 
 import { sleep } from 'k6';
 import { clientLogin, createOpportunity, clientOfferContract,
-         activateContract, addMilestone } from '../flows/clientFlow.js';
+         activateContract, getContractMilestones } from '../flows/clientFlow.js';
 import { designerLogin, findOpportunities, sendProposal,
          acceptContract } from '../flows/designerFlow.js';
 import { actorPairs, ACTOR_PASSWORD } from '../data/actors.js';
@@ -25,7 +25,7 @@ export const options = {
     offer_contract_success: ['rate>0.99'],
     accept_contract_success: ['rate>0.99'],
     activate_contract_success: ['rate>0.99'],
-    add_milestone_success: ['rate>0.99'],
+    contract_milestones_success: ['rate>0.99'],
 
     checks: ['rate>0.99'],
     http_req_failed: ['rate<0.01'],
@@ -75,7 +75,7 @@ export default function (data) {
 
   acceptContract(actor.designerToken, contractId, opportunityId);
   activateContract(actor.clientToken, contractId);
-  addMilestone(actor.clientToken, contractId);
+  getContractMilestones(actor.clientToken, contractId);
 
   sleep(1);
 }

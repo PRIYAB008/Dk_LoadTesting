@@ -11,7 +11,7 @@
 9. Client Offer/Contract
 10. Designer Accept Contract
 11. Client Activate Contract
-12. Add Milestone
+12. Read Offered Milestone
 13. Payment
 14. Verify Payment
 15. Activate Milestone
@@ -26,6 +26,10 @@ Payment. That order cannot work - the server rejects it with
                   Please complete the payment before activating it."}
 
 Payment must precede milestone activation. Verified against QA.
+
+The offer request in `data/payloads.js` contains the milestones. Composite
+journeys must read the offered milestone through the contract-milestone list
+endpoint; they must not call the retired add-milestone action.
 
 ## Where automation stops
 

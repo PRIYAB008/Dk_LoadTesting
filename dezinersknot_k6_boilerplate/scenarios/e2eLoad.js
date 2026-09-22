@@ -2,14 +2,16 @@
 import { sleep } from 'k6';
 
 import { USERS } from '../config/config.js';
+import { paymentConfig } from '../config/payment.js';
 import { summaryReport } from '../utils/summary.js';
+import { isWriteOk, safeIdentifier } from '../utils/helpers.js';
 
 import {
   clientLogin,
   createOpportunity,
   clientOfferContract,
   activateContract,
-  addMilestone,
+  getContractMilestones,
   activateMilestone,
   makePayment,
   verifyPayment,
@@ -25,8 +27,8 @@ import {
   submitWork,
 } from '../flows/designerFlow.js';
 
-const ALLOW_PAYMENT = __ENV.ALLOW_PAYMENT === 'true';
-const PAYMENT_MODE = __ENV.PAYMENT_MODE || 'order-only';
+const ALLOW_PAYMENT = paymentConfig.enabled;
+const PAYMENT_MODE = paymentConfig.mode;
 
 export const options = {
   stages: [
@@ -46,7 +48,7 @@ export const options = {
     offer_contract_success: ['rate>0.99'],
     accept_contract_success: ['rate>0.99'],
     activate_contract_success: ['rate>0.99'],
-    add_milestone_success: ['rate>0.99'],
+    contract_milestones_success: ['rate>0.99'],
 
     checks: ['rate>0.99'],
     http_req_failed: ['rate<0.01'],
@@ -113,25 +115,29 @@ export default function () {
     opportunityId
   );
 
-  activateContract(
+  const contractActivation = activateContract(
     client.token,
     contractId
   );
+  if (!isWriteOk(contractActivation.response)) {
+    throw new Error('Contract activation failed');
+  }
 
-  const milestone = addMilestone(
+  const milestone = getContractMilestones(
     client.token,
     contractId
   );
 
   if (!milestone.milestoneId) {
-    throw new Error('Milestone ID not extracted');
+    throw new Error('Offered milestone ID not extracted from combined_milestones');
   }
 
   const milestoneId = milestone.milestoneId;
   if (!ALLOW_PAYMENT) {
     console.log(
-      'e2e | stopped after add_milestone. Payment is opt-in: ' +
-      're-run with -e ALLOW_PAYMENT=true against an approved sandbox.'
+      'e2e | stopped after resolving an offered milestone. Payment is opt-in: ' +
+      're-run with -e PAYMENT_ENABLED=true -e CASHFREE_ENV=sandbox ' +
+      'against an approved sandbox.'
     );
     return;
   }
@@ -143,8 +149,13 @@ export default function () {
   );
 
   console.log(
-    `e2e | payment orderId=${payment.orderId} alreadyPaid=${payment.alreadyPaid}`
+    `e2e | payment order_id=${safeIdentifier(payment.orderId)} ` +
+    `already_paid=${payment.alreadyPaid}`
   );
+
+  if (!payment.orderCreated) {
+    throw new Error('Cashfree payment order was not created with an order_id');
+  }
 
   if (PAYMENT_MODE !== 'full') {
     console.log(
@@ -155,27 +166,34 @@ export default function () {
     return;
   }
 
-  verifyPayment(
+  const verification = verifyPayment(
     client.token,
     payment.orderId
   );
+  if (!verification.statusValid) {
+    console.log('e2e | payment is not settled in DK; stopping before milestone activation');
+    return;
+  }
 
-  activateMilestone(
+  const activation = activateMilestone(
     client.token,
     contractId,
     milestoneId
   );
+  if (!isWriteOk(activation.response)) return;
 
-  submitWork(
+  const submission = submitWork(
     designer.token,
     contractId,
     milestoneId
   );
+  if (!isWriteOk(submission.response)) return;
 
-  reviewWork(
+  const review = reviewWork(
     client.token,
     contractId
   );
+  if (!isWriteOk(review.response)) return;
 
   approveWork(
     client.token,

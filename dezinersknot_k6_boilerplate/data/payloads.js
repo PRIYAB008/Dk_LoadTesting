@@ -1,5 +1,8 @@
 
 export const MILESTONE_TYPE = 'BxBlockDashboard::ContractMilestone';
+export const PREFERRED_PAYMENT_TYPE = 'Single payment';
+export const OPPORTUNITY_PAYMENT_PREFERENCE =
+  __ENV.OPPORTUNITY_PAYMENT_PREFERENCE || 'single';
 
 function pad(n) {
   return n < 10 ? `0${n}` : `${n}`;
@@ -28,6 +31,7 @@ export const payloads = {
       title: `k6 load test opportunity ${tag()}`,
       rate_amount: 20000,
       rate_type: 'overall',
+      preferred_payment_type: OPPORTUNITY_PAYMENT_PREFERENCE,
       required_hours_per_week: 20,
       project_timeline: 4,
       files_or_links: '',
@@ -52,6 +56,7 @@ export const payloads = {
       terms_and_conditions: true,
       links: '',
       start_date: isoDate(1),
+      preferred_payment_type: OPPORTUNITY_PAYMENT_PREFERENCE,
     },
   }),
 
@@ -68,6 +73,7 @@ export const payloads = {
         description: 'First milestone created by the k6 test.',
         deliverables: ['Initial concept'],
         amount: 10000,
+        preferred_payment_type: PREFERRED_PAYMENT_TYPE,
         due_date: isoDate(14),
       },
       {
@@ -75,6 +81,7 @@ export const payloads = {
         description: 'Second milestone created by the k6 test.',
         deliverables: ['Final files'],
         amount: 10000,
+        preferred_payment_type: PREFERRED_PAYMENT_TYPE,
         due_date: isoDate(28),
       },
     ],
@@ -102,6 +109,7 @@ export const payloads = {
           description: 'Appended by the k6 test after contract creation.',
           deliverables: ['Handover pack'],
           amount: 5000,
+          preferred_payment_type: PREFERRED_PAYMENT_TYPE,
           due_date: ddmmyyyy(42),
         },
       },
