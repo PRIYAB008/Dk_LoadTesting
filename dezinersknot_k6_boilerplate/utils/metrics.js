@@ -34,6 +34,12 @@ export const STEPS = [
   'accept_contract',
   'submit_work',
   'admin_payment_stats',
+  'chat_open',
+  'chat_unread_count',
+  'chat_inbox',
+  'chat_send_message',
+  'chat_list_messages',
+  'chat_mark_read',
 ];
 
 const metrics = {};

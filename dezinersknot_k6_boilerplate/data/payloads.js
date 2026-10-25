@@ -135,6 +135,12 @@ export const payloads = {
       },
     },
   }),
+  openConversation: (proposalId) => ({ proposal_id: proposalId }),
+
+  chatMessage: (text) => ({ body: `${text} ${tag()}` }),
+
+  markRead: (messageId) => (messageId ? { message_id: messageId } : {}),
+
   submitWork: (contractId, milestoneId) => ({
     contract_id: contractId,
     contract_milestone_id: milestoneId,

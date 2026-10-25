@@ -6,6 +6,8 @@ import { clientLogin, createOpportunity, clientOfferContract,
          makePayment, verifyPayment } from '../flows/clientFlow.js';
 import { designerLogin, findOpportunities, sendProposal,
          acceptContract, submitWork } from '../flows/designerFlow.js';
+import { openConversation, sendMessage, listMessages, listConversations,
+         chatUnreadCount, markConversationRead } from '../flows/chatFlow.js';
 import { actorPairs, ACTOR_PASSWORD } from '../data/actors.js';
 import { summaryReport } from '../utils/summary.js';
 import { isWriteOk, safeIdentifier } from '../utils/helpers.js';
@@ -19,6 +21,7 @@ const TEST_TYPE = __ENV.TEST_TYPE || 'load';
 const VUS = positiveInteger('VUS', 60);
 const DURATION = __ENV.DURATION || '30m';
 const LIFECYCLE_SECONDS = positiveInteger('LIFECYCLE_SECONDS', 300);
+const CHAT_ENABLED = __ENV.CHAT_ENABLED !== 'false';
 const ALLOW_PAYMENT = paymentConfig.enabled;
 const PAYMENT_TAIL = ALLOW_PAYMENT && isSandboxPaymentMode();
 const ORDER_ONLY_PAYMENT_LOAD_APPROVED = __ENV.ORDER_ONLY_PAYMENT_LOAD_APPROVED === 'true';
@@ -38,6 +41,7 @@ const JITTER = 0.1;
 const THINK_WEIGHTS = {
   posted:    60,  // opportunity sits in the feed before a designer opens it
   browsed:   45,  // designer reads the listing and decides to bid
+  chat:      25,  // client and designer exchange messages about the proposal
   proposed:  70,  // proposal waits for the client to compare and price it
   offered:   50,
   accepted:  30,
@@ -164,6 +168,13 @@ const thresholds = {
   activate_contract_success: ['rate>0.99'],
   contract_milestones_success: ['rate>0.99'],
 
+  ...(CHAT_ENABLED ? {
+    chat_open_success: ['rate>0.99'],
+    chat_send_message_success: ['rate>0.99'],
+    chat_list_messages_success: ['rate>0.99'],
+    chat_mark_read_success: ['rate>0.99'],
+  } : {}),
+
   lifecycle_on_budget: ['rate>0.99'],
   lifecycle_completed: ['rate>0.99'],
   lifecycle_duration: [`avg<${(LIFECYCLE_SECONDS + 5) * 1000}`],
@@ -216,6 +227,21 @@ function endIteration(startedAt, completed) {
 
   if (remaining > 0) sleep(remaining);
   lifecycleDuration.add(Date.now() - startedAt);
+}
+
+// Client and designer talk about the proposal. Chat is a side channel, so a
+// failure is recorded in the chat_* metrics but does not abort the journey.
+function chatConversation(actor, proposalId) {
+  const { conversationId } = openConversation(actor.clientToken, proposalId);
+  if (!conversationId) return;
+
+  sendMessage(actor.clientToken, conversationId, 'Hi, can you share your timeline?');
+  chatUnreadCount(actor.designerToken);
+  listConversations(actor.designerToken);
+  listMessages(actor.designerToken, conversationId);
+  const reply = sendMessage(actor.designerToken, conversationId, 'Sure, about two weeks.');
+  listMessages(actor.clientToken, conversationId);
+  markConversationRead(actor.clientToken, conversationId, reply.messageId);
 }
 
 export function setup() {
@@ -274,7 +300,7 @@ export function setup() {
   console.log(`steady | stages: ${STAGES.map((stage) => `${stage.duration}->${stage.target} VUs`).join(', ')}`);
   console.log(
     `steady | think budget ${THINK_BUDGET.toFixed(0)}s + ` +
-    `${LATENCY_RESERVE.toFixed(0)}s reserved for latency across 7 requests`
+    `${LATENCY_RESERVE.toFixed(0)}s reserved for latency across the journey requests`
   );
   console.log(
     `steady | new VUs stagger over ${START_STAGGER_SECONDS}s; ` +
@@ -304,6 +330,10 @@ export default function (data) {
 
   const { proposalId } = sendProposal(actor.designerToken, opportunityId);
   if (!proposalId) { endIteration(startedAt, false); return; }
+  if (CHAT_ENABLED) {
+    chatConversation(actor, proposalId);
+    think('chat');
+  }
   think('proposed');
 
   const { contractId } = clientOfferContract(actor.clientToken, proposalId);
